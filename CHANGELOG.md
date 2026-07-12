@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-12
+
+### Added
+
+- **Token-Compressed Language (LLM Shorthand)** — implemented high-density semantic style (dense tokens like #G, #D, #E, #N, #F, #C) to maximize token efficiency.
+- **Lost-in-the-Middle Mitigations** — implemented Entropy Scoring and Redundancy Penalties in `calculateMessageImportance` to penalize repeated tool outputs and file reads, fighting context bloat.
+- **Golden Anchor Pattern** — structured summaries now follow a prioritized order (Goal at top, Next Steps at bottom) to optimize LLM retrieval.
+
+### Fixed
+
+- **Token budget logic bug** — fixed `removeOldCompressibleMessages` by implementing a running total to ensure strict adherence to the budget.
+- **Content erasure bug** — fixed `messageContent` to add descriptive tags for non-text blocks (e.g. `[image]`), preventing messages from being discarded.
+- **Deduplication collision risk** — updated `deduplicateMessages` to use full normalized content as the uniqueness key instead of just the first 100 characters.
+
 ## [1.2.0] - 2026-06-27
+
 
 ### Changed
 

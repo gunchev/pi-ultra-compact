@@ -26,10 +26,13 @@ function messageContent(msg: Message): string {
 	const c = msg.content;
 	if (typeof c === "string") return c;
 	if (Array.isArray(c)) {
-		return c
-			.filter((block: any): boolean => block?.type === "text")
-			.map((block: any): string => block.text ?? "")
-			.join(" ");
+		const textBlocks = c.filter((block: any): boolean => block?.type === "text");
+		const otherBlocks = c.filter((block: any): boolean => block?.type !== "text");
+
+		const text = textBlocks.map((block: any): string => block.text ?? "").join(" ");
+		const other = otherBlocks.map((block: any): string => `[${block?.type ?? "unknown"}]`).join(" ");
+
+		return (text + " " + other).trim();
 	}
 	return String(c ?? "");
 }
@@ -324,9 +327,10 @@ export class UltraCompactEngine {
 		const critical: Message[] = [];
 		const compressible: Message[] = [];
 		const scores = new Map<string, number>();
+		const seenPatterns = new Set<string>();
 
 		for (const message of messages) {
-			const score = this.calculateMessageImportance(message);
+			const score = this.calculateMessageImportance(message, seenPatterns);
 			scores.set(message.id, score);
 
 			if (score > 0.6) {
@@ -727,6 +731,7 @@ export class UltraCompactEngine {
 		const protectedMsgs: Message[] = [];
 		const compressible: Message[] = [];
 		const discardable: Message[] = [];
+		const seenPatterns = new Set<string>();
 
 		// Protect system prompts
 		let systemProtected = false;
@@ -742,7 +747,7 @@ export class UltraCompactEngine {
 			}
 
 			// Protect high-importance messages
-			const importance = this.calculateMessageImportance(msg);
+			const importance = this.calculateMessageImportance(msg, seenPatterns);
 			if (importance > 0.7) {
 				protectedMsgs.push(msg);
 				continue;
@@ -1054,13 +1059,14 @@ export class UltraCompactEngine {
 		// Separate into protected (keep) and candidates for removal
 		const protectedMsgs: Message[] = [];
 		const candidates: Message[] = [];
+		const seenPatterns = new Set<string>();
 
 		for (const msg of messages) {
 			if (msg.role === "user" || msg.role === "system") {
 				protectedMsgs.push(msg);
 			} else {
 				// Check importance — keep high-importance messages
-				const importance = this.calculateMessageImportance(msg);
+				const importance = this.calculateMessageImportance(msg, seenPatterns);
 				if (importance > 0.7) {
 					protectedMsgs.push(msg);
 				} else {
@@ -1074,11 +1080,12 @@ export class UltraCompactEngine {
 		const initialTokens = this.estimateTokens(result);
 
 		// Add back candidates from newest to oldest while staying under budget
+		let runningTotal = initialTokens;
 		for (let i = candidates.length - 1; i >= 0; i--) {
 			const candidateTokens = this.estimateTokens([candidates[i]]);
-			if (initialTokens + candidateTokens <= tokenBudget) {
+			if (runningTotal + candidateTokens <= tokenBudget) {
 				result.push(candidates[i]);
-				// Need to re-check budget with newly added message
+				runningTotal += candidateTokens;
 			}
 		}
 
@@ -1118,8 +1125,22 @@ export class UltraCompactEngine {
 	}
 
 	/**
-	 * Phase 3: Generate structured summary (compact format)
-	 * Uses terse headers, skips empty sections, and avoids extra whitespace.
+	 * Compress text into LLM-shorthand (Token-Compressed Language).
+	 * Strips articles, filler, and simplifies common structures.
+	 */
+	private compressText(text: string): string {
+		if (!text) return "";
+		return text
+			.replace(/\b(the|a|an|and|is|are|was|were|be|been|being)\b/gi, "")
+			.replace(/\b(basically|actually|really|just|simply|essentially|literally)\b/gi, "")
+			.replace(/\s+and\s+/gi, " + ")
+			.replace(/\s+/g, " ")
+			.trim();
+	}
+
+	/**
+	 * Phase 3: Generate structured summary (Token-Compressed Shorthand)
+	 * Uses dense symbols and compressed text to maximize token efficiency.
 	 */
 	private generateStructuredSummary(
 		compressible: Message[],
@@ -1130,7 +1151,7 @@ export class UltraCompactEngine {
 
 		// Add previous summary if exists (iterative update)
 		if (previousSummary) {
-			sections.push("## Previous Context\n" + previousSummary);
+			sections.push("#Prev\n" + previousSummary);
 		}
 
 		// Extract from ALL messages (both compressible and protected)
@@ -1141,65 +1162,73 @@ export class UltraCompactEngine {
 		const nextSteps = this.extractNextSteps(allMessages);
 		const fileOps = this.extractFileOperations(allMessages);
 
-		// Compact goals section
+		// Compressed goals section
 		if (goals.length > 0) {
-			sections.push("## Goals\n- " + goals.join(" / "));
+			sections.push("#G: " + goals.map(g => this.compressText(g)).join(" / "));
 		}
 
-		// Compact decisions section
+		// Compressed decisions section
 		if (decisions.length > 0) {
-			sections.push("## Decisions\n- " + decisions.join(" / "));
+			sections.push("#D: " + decisions.map(d => this.compressText(d)).join(" / "));
 		}
 
-		// Compact errors & solutions section
+		// Compressed errors & solutions section
 		if (errors.length > 0) {
-			sections.push("## Errors\n- " + errors.join("\n- "));
+			sections.push("#E: " + errors.map(e => this.compressText(e)).join(" | "));
 		}
 
-		// Compact file operations (single line with pipe separators)
+		// Compressed file operations
 		if (fileOps.read.length > 0 || fileOps.modified.length > 0) {
 			const parts: string[] = [];
 			if (fileOps.read.length > 0) {
-				parts.push("R: " + fileOps.read.join(", "));
+				parts.push("R:" + fileOps.read.join(","));
 			}
 			if (fileOps.modified.length > 0) {
-				parts.push("M: " + fileOps.modified.join(", "));
+				parts.push("M:" + fileOps.modified.join(","));
 			}
-			sections.push("## Files\n- " + parts.join(" | "));
+			sections.push("#F: " + parts.join(" | "));
 		}
 
-		// Compact next steps section
+		// Compressed next steps section
 		if (nextSteps.length > 0) {
-			sections.push("## Next\n- " + nextSteps.join(" → "));
+			sections.push("#N: " + nextSteps.map(s => this.compressText(s)).join(" -> "));
 		}
 
-		// Compact conversation summary
+		// Compressed conversation summary
 		const compressedConversation = this.compressConversation(compressible);
 		if (compressible.length > 0 && compressedConversation) {
-			sections.push(
-				"## Chat" +
-					(compressedConversation ? "\n" + compressedConversation : ""),
-			);
+			sections.push("#C\n" + compressedConversation);
 		}
 
-		return sections.join("\n\n");
+		return sections.join("\n");
 	}
 
 	/**
 	 * Calculate message importance score (0-1)
+	 * Now includes redundancy penalties to fight context bloat.
 	 */
-	private calculateMessageImportance(message: Message): number {
+	private calculateMessageImportance(message: Message, seenPatterns: Set<string> = new Set()): number {
 		let maxWeight = 0;
 		const text = messageContent(message);
 
-		// Check keyword patterns
+		// 1. Keyword patterns
 		for (const { pattern, weight } of IMPORTANCE_SIGNALS.keywords) {
 			if (pattern.test(text)) {
 				maxWeight = Math.max(maxWeight, weight);
 			}
 		}
 
-		// Apply content multipliers
+		// 2. Redundancy Penalty (Entropy Scoring)
+		// If this looks like a repeated tool output or a duplicate file read, penalize it
+		const patternKey = this.extractPatternKey(text);
+		if (patternKey) {
+			if (seenPatterns.has(patternKey)) {
+				maxWeight *= 0.4; // Heavy penalty for redundant info
+			}
+			seenPatterns.add(patternKey);
+		}
+
+		// 3. Content type multipliers
 		if (text.includes("```")) {
 			maxWeight *= IMPORTANCE_SIGNALS.contentMultipliers.codeBlock;
 		}
@@ -1216,7 +1245,7 @@ export class UltraCompactEngine {
 			maxWeight *= IMPORTANCE_SIGNALS.contentMultipliers.errorLog;
 		}
 
-		// Decay for very long messages
+		// 4. Decay for very long messages
 		if (text.length > 2000) {
 			maxWeight *= IMPORTANCE_SIGNALS.contentMultipliers.multiLine;
 		}
@@ -1227,6 +1256,20 @@ export class UltraCompactEngine {
 		}
 
 		return Math.min(1, maxWeight);
+	}
+
+	/**
+	 * Extract a key representing the "type" of information to detect redundancy.
+	 */
+	private extractPatternKey(text: string): string | null {
+		if (TOOL_OUTPUT_PATTERNS.fileRead.test(text)) {
+			return "read:" + this.extractFilePath(text);
+		}
+		if (TOOL_OUTPUT_PATTERNS.commandOutput.test(text)) {
+			const cmd = text.match(/^[\$>] ([\w/-]+)/);
+			return cmd ? `cmd:${cmd[1]}` : "cmd:generic";
+		}
+		return null;
 	}
 
 	/**

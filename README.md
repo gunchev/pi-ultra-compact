@@ -24,7 +24,10 @@ Advanced compaction extension and skill for [Pi](https://pi.dev/) with automatic
 - **Multi-pass summarization** — progressive compression with quality scoring
 - **LLM-based summarization** — optional AI-powered compression (useLLM config)
 - **Content-aware token counting** — dynamic ratios for code, prose, and whitespace
-- **Compact section templates** — shorter headers, condensed formatting, saves 10-15% more tokens
+- **Token-Compressed Language (LLM Shorthand)** — high-density semantic style for extreme token efficiency
+- **Lost-in-the-Middle Mitigations** — Entropy Scoring and Redundancy Penalties to fight context bloat in long histories
+
+## Installation
 
 ## Installation
 
