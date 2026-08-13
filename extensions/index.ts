@@ -8,7 +8,12 @@
  * - Critical context preservation
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { UltraCompactEngine } from "./engine";
+import { EvictionLevel } from "./types";
 import type { UltraCompactConfig } from "./types";
 
 /** Track current model at runtime (updated by session_start and model_select events) */
@@ -28,6 +33,69 @@ const DEFAULT_CONFIG: UltraCompactConfig = {
 	maxKeepTokens: 30000,
 	autoCompact: true,
 };
+
+/**
+ * Pi calls extension factories with ONE argument (the API) — the package
+ * settings block from settings.json never reaches `config`. Read it from
+ * disk here so user watermarks (preemptiveWatermark/hardWatermark),
+ * keepPercentage, maxKeepTokens, cacheAware and maxEvictionLevel actually
+ * take effect.
+ */
+function loadUserSettings(): Partial<UltraCompactConfig> {
+	try {
+		const envDir = process.env.PI_CODING_AGENT_DIR;
+		const agentDir = envDir ? envDir : join(homedir(), ".pi", "agent");
+		const raw = readFileSync(join(agentDir, "settings.json"), "utf8");
+		const settings = JSON.parse(raw) as Record<string, unknown>;
+		const block = settings["pi-ultra-compact"];
+		if (!block || typeof block !== "object") return {};
+		const cfg = block as Record<string, unknown>;
+		const out: Partial<UltraCompactConfig> = {};
+		if (typeof cfg.autoCompact === "boolean") out.autoCompact = cfg.autoCompact;
+		if (typeof cfg.cacheAware === "boolean") out.cacheAware = cfg.cacheAware;
+		if (typeof cfg.keepPercentage === "number") out.keepPercentage = cfg.keepPercentage;
+		if (typeof cfg.maxKeepTokens === "number") out.maxKeepTokens = cfg.maxKeepTokens;
+		if (typeof cfg.preemptiveWatermark === "number") out.preemptiveWatermark = cfg.preemptiveWatermark;
+		if (typeof cfg.hardWatermark === "number") out.hardWatermark = cfg.hardWatermark;
+		if (typeof cfg.outputHeadroom === "number") out.outputHeadroom = cfg.outputHeadroom;
+		if (typeof cfg.useLLM === "boolean") out.useLLM = cfg.useLLM;
+		if (typeof cfg.thresholdTokens === "number") out.thresholdTokens = cfg.thresholdTokens;
+		const eviction = sanitizeEvictionLevel(cfg.maxEvictionLevel);
+		if (eviction !== undefined) out.maxEvictionLevel = eviction;
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * settings.json carries PI-NATIVE eviction names (e.g.
+ * "SUMMARIZE_OLD_CONVERSATION"), not this extension's numeric enum — a
+ * string against the `maxLevel >= EvictionLevel.X` comparisons silently
+ * disabled eviction entirely. Map native names to the strongest extension
+ * equivalent and drop unknown values.
+ */
+function sanitizeEvictionLevel(value: unknown): EvictionLevel | undefined {
+	if (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value >= EvictionLevel.STRIP_REASONING &&
+		value <= EvictionLevel.FULL_REMOVAL
+	) {
+		return value as EvictionLevel;
+	}
+	if (typeof value === "string") {
+		const nativeMap: Record<string, EvictionLevel> = {
+			SUMMARIZE_OLD_CONVERSATION: EvictionLevel.FULL_REMOVAL,
+			STRIP_OLD_TOOL_OUTPUT: EvictionLevel.STRIP_ARTIFACTS,
+			SUMMARIZE_OLD_TOOL_OUTPUT: EvictionLevel.STRIP_BULK_OUTPUT,
+			KEEP_ALL: EvictionLevel.STRIP_REASONING,
+		};
+		if (value in nativeMap) return nativeMap[value];
+	}
+	return undefined;
+}
+
 
 function captureModel(model: any): void {
 	if (!model) return;
@@ -406,7 +474,23 @@ export default function piUltraCompact(
 	pi: any,
 	config: UltraCompactConfig = {},
 ): void {
-	const mergedConfig = { ...DEFAULT_CONFIG, ...config };
+	const mergedConfig = {
+		...DEFAULT_CONFIG,
+		...loadUserSettings(),
+		...config,
+	};
+	console.log(
+		"[ultra-compact] effective config:",
+		JSON.stringify({
+			autoCompact: mergedConfig.autoCompact,
+			preemptiveWatermark: mergedConfig.preemptiveWatermark,
+			hardWatermark: mergedConfig.hardWatermark,
+			keepPercentage: mergedConfig.keepPercentage,
+			maxKeepTokens: mergedConfig.maxKeepTokens,
+			cacheAware: mergedConfig.cacheAware,
+			maxEvictionLevel: mergedConfig.maxEvictionLevel,
+		}),
+	);
 
 	const engine = new UltraCompactEngine({
 		...mergedConfig,
