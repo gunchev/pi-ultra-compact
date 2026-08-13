@@ -187,8 +187,10 @@ export class UltraCompactEngine {
 			['gpt-5.1-codex', 400000],
 			['gpt-5.4-pro', 1100000],
 			['gemini-3.5-flash', 1000000],
-			['deepseek-v4-flash', 200000],
-			['deepseek-v4-flash-free', 200000],
+			// deepseek-v4-flash ships a 1M context window; the old 200k pin made
+			// every watermark 5x too aggressive.
+			['deepseek-v4-flash', 1000000],
+			['deepseek-v4-flash-free', 1000000],
 			['deepseek-r1', 65536],
 			['codestral', 256000],
 			['o3', 200000],
@@ -209,7 +211,7 @@ export class UltraCompactEngine {
 			['claude', 200000],
 			['gpt', 128000],
 			['gemini', 1000000],
-			['deepseek', 128000],
+			['deepseek', 1000000],
 			['llama', 128000],
 			['mistral', 128000],
 			['codestral', 128000],
@@ -438,18 +440,23 @@ export class UltraCompactEngine {
 	 * @param currentTokens Current estimated token count
 	 */
 	public shouldCompact(currentTokens: number): boolean {
-		// Gate 1: Percentage threshold — fires at configured % of context window
-		const percentThreshold = Math.floor(this.contextWindow * 0.6);
-		if (currentTokens >= percentThreshold) {
+		// Gate 1: Preemptive watermark — the CONFIGURED soft threshold
+		// (preemptiveWatermark, default 0.7). This used to be hardcoded 0.6
+		// and ignored the user's setting entirely.
+		const preemptiveCap = Math.floor(
+			this.contextWindow * this.config.preemptiveWatermark,
+		);
+		if (currentTokens >= preemptiveCap) {
 			return true;
 		}
-		
-		// Gate 2: Hard token cap — fires at absolute token count regardless of context size
+
+		// Gate 2: Hard watermark — fires at the configured hard fraction of
+		// the context window (hardWatermark, default 0.5).
 		const hardCap = Math.floor(this.contextWindow * this.config.hardWatermark);
 		if (currentTokens >= hardCap) {
 			return true;
 		}
-		
+
 		return false;
 	}
 

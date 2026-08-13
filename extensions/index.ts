@@ -17,6 +17,10 @@ let currentModel: { id?: string; contextWindow?: number } | undefined;
 let compactionFailures = 0;
 let breakerTrippedAtTurn: number | null = null;
 let currentTurn = 0;
+/** Proactive trigger state: prevents stacked/duplicate auto-compactions */
+let autoCompactionInFlight = false;
+let agentRounds = 0;
+let lastAutoTriggerRound = -Infinity;
 
 /** Default configuration — thresholdTokens omitted so engine auto-detects from model context window */
 const DEFAULT_CONFIG: UltraCompactConfig = {
@@ -94,6 +98,100 @@ function handleUltracompactCommand(
 				} else {
 					console.error("Ultra-compact failed:", error.message);
 				}
+			},
+		});
+	};
+}
+
+/**
+ * Proactive auto-compaction trigger.
+ *
+ * Pi's NATIVE compaction only fires at `contextWindow - reserveTokens`
+ * (~98% of the window); this extension is otherwise just an interceptor of
+ * that event, so user watermarks like 0.35/0.40 could never fire on their
+ * own. This handler hooks `agent_end` (emitted after every model round),
+ * reads the live context usage, and starts a compaction through
+ * ctx.compact() when the projected usage crosses the configured watermarks.
+ * Fire-and-forget on purpose: awaiting ctx.compact() inside the agent_end
+ * emit chain would deadlock the extension runner.
+ */
+function handleAgentEnd(
+	engine: UltraCompactEngine,
+): (event: any, ctx: any) => void {
+	return (event: any, ctx: any) => {
+		agentRounds++;
+		if (autoCompactionInFlight) return;
+		// Cooldown after the last auto trigger (in model rounds).
+		const AUTO_COOLDOWN_ROUNDS = 8;
+		if (agentRounds - lastAutoTriggerRound < AUTO_COOLDOWN_ROUNDS) return;
+		if (typeof ctx?.compact !== "function") return;
+
+		// Capture the model at runtime so the threshold adapts on switch.
+		if (ctx?.model) {
+			captureModel(ctx.model);
+		}
+		reconfigureEngineForCurrentModel(engine);
+
+		// Authoritative live context usage (the same source as the TUI
+		// meter): { tokens, contextWindow, percent }. Sync the engine's
+		// window to it when available (defense in depth against stale
+		// model tables).
+		const usageInfo =
+			typeof ctx?.getContextUsage === "function"
+				? ctx.getContextUsage()
+				: undefined;
+		let contextTokens = usageInfo?.tokens ?? 0;
+		if (
+			usageInfo &&
+			typeof usageInfo.contextWindow === "number" &&
+			usageInfo.contextWindow > 0
+		) {
+			engine.reconfigure(currentModel?.id, usageInfo.contextWindow);
+		}
+		// Fallback: last assistant message with valid usage.
+		if (contextTokens <= 0) {
+			const messages = Array.isArray(event?.messages) ? event.messages : [];
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const message = messages[i];
+				if (message?.role !== "assistant" || !message.usage) continue;
+				const usage = message.usage;
+				const tokens =
+					usage.totalTokens ||
+					(usage.input || 0) +
+						(usage.output || 0) +
+						(usage.cacheRead || 0) +
+						(usage.cacheWrite || 0);
+				if (tokens > 0) {
+					contextTokens = tokens;
+					break;
+				}
+			}
+		}
+		if (contextTokens === 0) return;
+
+		const outputHeadroom = engine["config"]?.outputHeadroom ?? 4096;
+		if (!engine.shouldCompact(contextTokens + outputHeadroom)) return;
+
+		autoCompactionInFlight = true;
+		lastAutoTriggerRound = agentRounds;
+		notify(
+			ctx,
+			`Context at ${Math.round(contextTokens / 1000)}k tokens — starting Ultra-compact…`,
+			"info",
+		);
+		void ctx.compact({
+			customInstructions: "ultracompact",
+			onComplete: () => {
+				autoCompactionInFlight = false;
+				notify(ctx, "Ultra-compact auto-compaction complete!", "info");
+			},
+			onError: (error: Error) => {
+				autoCompactionInFlight = false;
+				notify(
+					ctx,
+					`Ultra-compact auto-compaction failed: ${error.message}`,
+					"error",
+				);
 			},
 		});
 	};
@@ -350,9 +448,10 @@ export default function piUltraCompact(
 		});
 	}
 
-	// Register automatic compaction hook (single handler)
+	// Register automatic compaction hooks (single handler + proactive trigger)
 	if (mergedConfig.autoCompact) {
 		pi.on("session_before_compact", handleBeforeCompact(engine));
+		pi.on("agent_end", handleAgentEnd(engine));
 	}
 }
 
@@ -370,4 +469,7 @@ export function __resetModuleState(): void {
 	compactionFailures = 0;
 	breakerTrippedAtTurn = null;
 	currentTurn = 0;
+	autoCompactionInFlight = false;
+	agentRounds = 0;
+	lastAutoTriggerRound = -Infinity;
 }

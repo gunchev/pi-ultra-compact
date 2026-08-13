@@ -3,7 +3,8 @@ import { UltraCompactEngine } from "../extensions/engine";
 describe("improved model detection", () => {
 	const cases: [string, string, number][] = [
 		// [modelId, expectedFamily, expectedContextWindow]
-		["deepseek-v4-flash-free", "deepseek", 200000],
+		["deepseek-v4-flash", "deepseek", 1000000],
+		["deepseek-v4-flash-free", "deepseek", 1000000],
 		["claude-sonnet-4", "anthropic", 200000],
 		["claude-opus-4-5", "anthropic", 200000],
 		["claude-opus-4-7", "anthropic", 1000000],
