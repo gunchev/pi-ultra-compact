@@ -258,12 +258,16 @@ describe("content type edge cases", () => {
 		expect(() => engine.estimateTokens([msg])).not.toThrow();
 	});
 
-	it("structured content with all image blocks yields 0 tokens", () => {
+	it("structured content with all image blocks is not token-free", () => {
 		const engine = new UltraCompactEngine();
 		const msg = makeStructuredMsg("1", "user", [
 			{ type: "image" } as any, { type: "image" } as any,
 		]);
-		expect(engine.estimateTokens([msg])).toBe(0);
+		// v1.3.0 describes non-text blocks as "[image]" rather than dropping them,
+		// so an image-only message is no longer invisible to the token estimate.
+		// The tags themselves cost a few tokens; the point is that it is > 0.
+		expect(engine.estimateTokens([msg])).toBeGreaterThan(0);
+		expect(engine.estimateTokens([msg])).toBeLessThan(20);
 	});
 
 	it("structured content with 1000+ blocks", () => {
