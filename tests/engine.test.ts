@@ -111,7 +111,7 @@ describe("UltraCompactEngine", () => {
 			expect(engine.shouldCompact(50000)).toBe(false);
 		});
 
-		it("returns true when tokens exceed Gate 1 (60% threshold)", async () => {
+		it("returns true when tokens exceed Gate 1 (preemptive watermark)", async () => {
 			const engine = new UltraCompactEngine({ thresholdTokens: 100000 });
 			expect(engine.shouldCompact(150000)).toBe(true);
 		});
@@ -121,9 +121,10 @@ describe("UltraCompactEngine", () => {
 			expect(engine.shouldCompact(100000)).toBe(true);
 		});
 
-		it("hardWatermark fires as fallback when Gate 1 (60%) doesn't fire — default hardWatermark=0.5", async () => {
+		it("hardWatermark fires as fallback when Gate 1 (preemptive watermark) doesn't fire — default hardWatermark=0.5", async () => {
 			// Default contextWindow=128000, hardWatermark=0.5 → hardCap=64000
-			// Gate 1 fires at 60%=76800. Tokens at 70000 are below Gate 1 but above hardCap
+			// Gate 1 fires at preemptiveWatermark 0.7=89600. Tokens at 70000
+			// are below Gate 1 but above hardCap
 			const engine = new UltraCompactEngine({ thresholdTokens: 100000 });
 			expect(engine.shouldCompact(70000)).toBe(true);
 		});
@@ -144,10 +145,11 @@ describe("UltraCompactEngine", () => {
 				hardWatermark: 1.0,
 			});
 			// hardCap = 128000 * 1.0 = 128000 → Gate 2 won't fire below 128K
-			// 70000 < Gate 1 (76800) AND 70000 < hardCap (128000) → false
+			// Gate 1 = preemptiveWatermark 0.7 * 128000 = 89600
+			// 70000 < Gate 1 (89600) AND 70000 < hardCap (128000) → false
 			expect(engine.shouldCompact(70000)).toBe(false);
-			// 80000 >= Gate 1 (76800) → true (Gate 1 fires before Gate 2)
-			expect(engine.shouldCompact(80000)).toBe(true);
+			// 90000 >= Gate 1 (89600) → true (Gate 1 fires before Gate 2)
+			expect(engine.shouldCompact(90000)).toBe(true);
 		});
 
 		it("tokens below both gates return false", async () => {

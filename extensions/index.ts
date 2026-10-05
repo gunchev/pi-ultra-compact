@@ -8,8 +8,13 @@
  * - Critical context preservation
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { UltraCompactEngine } from "./engine";
 import { messageContent, summaryHasContent } from "./utils";
+import { EvictionLevel } from "./types";
 import type { UltraCompactConfig } from "./types";
 
 /** Track current model at runtime (updated by session_start and model_select events) */
@@ -18,6 +23,10 @@ let currentModel: { id?: string; contextWindow?: number } | undefined;
 let compactionFailures = 0;
 let breakerTrippedAtTurn: number | null = null;
 let currentTurn = 0;
+/** Proactive trigger state: prevents stacked/duplicate auto-compactions */
+let autoCompactionInFlight = false;
+let agentRounds = 0;
+let lastAutoTriggerRound = -Infinity;
 
 /** Default configuration — thresholdTokens omitted so engine auto-detects from model context window */
 const DEFAULT_CONFIG: UltraCompactConfig = {
@@ -25,6 +34,69 @@ const DEFAULT_CONFIG: UltraCompactConfig = {
 	maxKeepTokens: 30000,
 	autoCompact: true,
 };
+
+/**
+ * Pi calls extension factories with ONE argument (the API) — the package
+ * settings block from settings.json never reaches `config`. Read it from
+ * disk here so user watermarks (preemptiveWatermark/hardWatermark),
+ * keepPercentage, maxKeepTokens, cacheAware and maxEvictionLevel actually
+ * take effect.
+ */
+function loadUserSettings(): Partial<UltraCompactConfig> {
+	try {
+		const envDir = process.env.PI_CODING_AGENT_DIR;
+		const agentDir = envDir ? envDir : join(homedir(), ".pi", "agent");
+		const raw = readFileSync(join(agentDir, "settings.json"), "utf8");
+		const settings = JSON.parse(raw) as Record<string, unknown>;
+		const block = settings["pi-ultra-compact"];
+		if (!block || typeof block !== "object") return {};
+		const cfg = block as Record<string, unknown>;
+		const out: Partial<UltraCompactConfig> = {};
+		if (typeof cfg.autoCompact === "boolean") out.autoCompact = cfg.autoCompact;
+		if (typeof cfg.cacheAware === "boolean") out.cacheAware = cfg.cacheAware;
+		if (typeof cfg.keepPercentage === "number") out.keepPercentage = cfg.keepPercentage;
+		if (typeof cfg.maxKeepTokens === "number") out.maxKeepTokens = cfg.maxKeepTokens;
+		if (typeof cfg.preemptiveWatermark === "number") out.preemptiveWatermark = cfg.preemptiveWatermark;
+		if (typeof cfg.hardWatermark === "number") out.hardWatermark = cfg.hardWatermark;
+		if (typeof cfg.outputHeadroom === "number") out.outputHeadroom = cfg.outputHeadroom;
+		if (typeof cfg.useLLM === "boolean") out.useLLM = cfg.useLLM;
+		if (typeof cfg.thresholdTokens === "number") out.thresholdTokens = cfg.thresholdTokens;
+		const eviction = sanitizeEvictionLevel(cfg.maxEvictionLevel);
+		if (eviction !== undefined) out.maxEvictionLevel = eviction;
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * settings.json carries PI-NATIVE eviction names (e.g.
+ * "SUMMARIZE_OLD_CONVERSATION"), not this extension's numeric enum — a
+ * string against the `maxLevel >= EvictionLevel.X` comparisons silently
+ * disabled eviction entirely. Map native names to the strongest extension
+ * equivalent and drop unknown values.
+ */
+function sanitizeEvictionLevel(value: unknown): EvictionLevel | undefined {
+	if (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value >= EvictionLevel.STRIP_REASONING &&
+		value <= EvictionLevel.FULL_REMOVAL
+	) {
+		return value as EvictionLevel;
+	}
+	if (typeof value === "string") {
+		const nativeMap: Record<string, EvictionLevel> = {
+			SUMMARIZE_OLD_CONVERSATION: EvictionLevel.FULL_REMOVAL,
+			STRIP_OLD_TOOL_OUTPUT: EvictionLevel.STRIP_ARTIFACTS,
+			SUMMARIZE_OLD_TOOL_OUTPUT: EvictionLevel.STRIP_BULK_OUTPUT,
+			KEEP_ALL: EvictionLevel.STRIP_REASONING,
+		};
+		if (value in nativeMap) return nativeMap[value];
+	}
+	return undefined;
+}
+
 
 function captureModel(model: any): void {
 	if (!model) return;
@@ -95,6 +167,100 @@ function handleUltracompactCommand(
 				} else {
 					console.error("Ultra-compact failed:", error.message);
 				}
+			},
+		});
+	};
+}
+
+/**
+ * Proactive auto-compaction trigger.
+ *
+ * Pi's NATIVE compaction only fires at `contextWindow - reserveTokens`
+ * (~98% of the window); this extension is otherwise just an interceptor of
+ * that event, so user watermarks like 0.35/0.40 could never fire on their
+ * own. This handler hooks `agent_end` (emitted after every model round),
+ * reads the live context usage, and starts a compaction through
+ * ctx.compact() when the projected usage crosses the configured watermarks.
+ * Fire-and-forget on purpose: awaiting ctx.compact() inside the agent_end
+ * emit chain would deadlock the extension runner.
+ */
+function handleAgentEnd(
+	engine: UltraCompactEngine,
+): (event: any, ctx: any) => void {
+	return (event: any, ctx: any) => {
+		agentRounds++;
+		if (autoCompactionInFlight) return;
+		// Cooldown after the last auto trigger (in model rounds).
+		const AUTO_COOLDOWN_ROUNDS = 8;
+		if (agentRounds - lastAutoTriggerRound < AUTO_COOLDOWN_ROUNDS) return;
+		if (typeof ctx?.compact !== "function") return;
+
+		// Capture the model at runtime so the threshold adapts on switch.
+		if (ctx?.model) {
+			captureModel(ctx.model);
+		}
+		reconfigureEngineForCurrentModel(engine);
+
+		// Authoritative live context usage (the same source as the TUI
+		// meter): { tokens, contextWindow, percent }. Sync the engine's
+		// window to it when available (defense in depth against stale
+		// model tables).
+		const usageInfo =
+			typeof ctx?.getContextUsage === "function"
+				? ctx.getContextUsage()
+				: undefined;
+		let contextTokens = usageInfo?.tokens ?? 0;
+		if (
+			usageInfo &&
+			typeof usageInfo.contextWindow === "number" &&
+			usageInfo.contextWindow > 0
+		) {
+			engine.reconfigure(currentModel?.id, usageInfo.contextWindow);
+		}
+		// Fallback: last assistant message with valid usage.
+		if (contextTokens <= 0) {
+			const messages = Array.isArray(event?.messages) ? event.messages : [];
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const message = messages[i];
+				if (message?.role !== "assistant" || !message.usage) continue;
+				const usage = message.usage;
+				const tokens =
+					usage.totalTokens ||
+					(usage.input || 0) +
+						(usage.output || 0) +
+						(usage.cacheRead || 0) +
+						(usage.cacheWrite || 0);
+				if (tokens > 0) {
+					contextTokens = tokens;
+					break;
+				}
+			}
+		}
+		if (contextTokens === 0) return;
+
+		const outputHeadroom = engine["config"]?.outputHeadroom ?? 4096;
+		if (!engine.shouldCompact(contextTokens + outputHeadroom)) return;
+
+		autoCompactionInFlight = true;
+		lastAutoTriggerRound = agentRounds;
+		notify(
+			ctx,
+			`Context at ${Math.round(contextTokens / 1000)}k tokens — starting Ultra-compact…`,
+			"info",
+		);
+		void ctx.compact({
+			customInstructions: "ultracompact",
+			onComplete: () => {
+				autoCompactionInFlight = false;
+				notify(ctx, "Ultra-compact auto-compaction complete!", "info");
+			},
+			onError: (error: Error) => {
+				autoCompactionInFlight = false;
+				notify(
+					ctx,
+					`Ultra-compact auto-compaction failed: ${error.message}`,
+					"error",
+				);
 			},
 		});
 	};
@@ -302,7 +468,23 @@ export default function piUltraCompact(
 	pi: any,
 	config: UltraCompactConfig = {},
 ): void {
-	const mergedConfig = { ...DEFAULT_CONFIG, ...config };
+	const mergedConfig = {
+		...DEFAULT_CONFIG,
+		...loadUserSettings(),
+		...config,
+	};
+	console.log(
+		"[ultra-compact] effective config:",
+		JSON.stringify({
+			autoCompact: mergedConfig.autoCompact,
+			preemptiveWatermark: mergedConfig.preemptiveWatermark,
+			hardWatermark: mergedConfig.hardWatermark,
+			keepPercentage: mergedConfig.keepPercentage,
+			maxKeepTokens: mergedConfig.maxKeepTokens,
+			cacheAware: mergedConfig.cacheAware,
+			maxEvictionLevel: mergedConfig.maxEvictionLevel,
+		}),
+	);
 
 	const engine = new UltraCompactEngine({
 		...mergedConfig,
@@ -344,9 +526,10 @@ export default function piUltraCompact(
 		});
 	}
 
-	// Register automatic compaction hook (single handler)
+	// Register automatic compaction hooks (single handler + proactive trigger)
 	if (mergedConfig.autoCompact) {
 		pi.on("session_before_compact", handleBeforeCompact(engine));
+		pi.on("agent_end", handleAgentEnd(engine));
 	}
 }
 
@@ -364,4 +547,7 @@ export function __resetModuleState(): void {
 	compactionFailures = 0;
 	breakerTrippedAtTurn = null;
 	currentTurn = 0;
+	autoCompactionInFlight = false;
+	agentRounds = 0;
+	lastAutoTriggerRound = -Infinity;
 }
