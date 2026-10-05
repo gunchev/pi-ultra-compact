@@ -311,7 +311,8 @@ describe("UltraCompactEngine", () => {
 			const msgs = [makeMsg("1", "user", "GOAL: Build a payment gateway")];
 			const result = await engine.generateSummary(msgs);
 			expect(result.summary).toContain("Build a payment gateway");
-			expect(result.summary).toContain("## Goals");
+			// v1.3.0 token-compressed section marker for Goals
+			expect(result.summary).toMatch(/^#G:/m);
 		});
 
 		it("extracts Key Decisions section", async () => {
@@ -319,7 +320,8 @@ describe("UltraCompactEngine", () => {
 			const msgs = [makeMsg("1", "user", "DECISION: Use React for frontend")];
 			const result = await engine.generateSummary(msgs);
 			expect(result.summary).toContain("Use React for frontend");
-			expect(result.summary).toContain("## Decisions");
+			// v1.3.0 token-compressed section marker for Decisions
+			expect(result.summary).toMatch(/^#D:/m);
 		});
 
 		it("extracts Errors & Solutions section", async () => {
@@ -327,7 +329,8 @@ describe("UltraCompactEngine", () => {
 			const msgs = [makeMsg("1", "user", "ERROR: Connection timeout")];
 			const result = await engine.generateSummary(msgs);
 			expect(result.summary).toContain("Connection timeout");
-			expect(result.summary).toContain("## Errors");
+			// v1.3.0 token-compressed section marker for Errors
+			expect(result.summary).toMatch(/^#E:/m);
 		});
 
 		it("extracts Next Steps section", async () => {
@@ -342,7 +345,8 @@ describe("UltraCompactEngine", () => {
 			];
 			const result = await engine.generateSummary(msgs);
 			expect(result.summary).toContain("Deploy to production");
-			expect(result.summary).toContain("## Next");
+			// v1.3.0 token-compressed section marker for Next Steps
+			expect(result.summary).toMatch(/^#N:/m);
 		});
 
 		it("includes Conversation Summary for compressible messages", async () => {
@@ -359,7 +363,8 @@ describe("UltraCompactEngine", () => {
 				);
 			}
 			const result = await engine.generateSummary(msgs);
-			expect(result.summary).toContain("## Chat");
+			// v1.3.0 token-compressed section marker for the compressed conversation
+			expect(result.summary).toMatch(/^#C$/m);
 		});
 
 		it("returns non-zero compression ratio metrics", async () => {
