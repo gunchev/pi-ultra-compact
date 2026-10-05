@@ -31,3 +31,11 @@ npm-debug.log*
 
 # Coverage reports
 coverage/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+/.claude/
+/.ignore
+/.mcp.json
+/AGENTS.md
+/opencode.json
