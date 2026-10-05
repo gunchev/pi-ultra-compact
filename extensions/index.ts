@@ -473,18 +473,23 @@ export default function piUltraCompact(
 		...loadUserSettings(),
 		...config,
 	};
-	console.log(
-		"[ultra-compact] effective config:",
-		JSON.stringify({
-			autoCompact: mergedConfig.autoCompact,
-			preemptiveWatermark: mergedConfig.preemptiveWatermark,
-			hardWatermark: mergedConfig.hardWatermark,
-			keepPercentage: mergedConfig.keepPercentage,
-			maxKeepTokens: mergedConfig.maxKeepTokens,
-			cacheAware: mergedConfig.cacheAware,
-			maxEvictionLevel: mergedConfig.maxEvictionLevel,
-		}),
-	);
+	// Diagnostics only. pi owns stdout for its TUI, so unconditional startup
+	// logging breaks the "no normal startup messages to stdout" contract that
+	// tests/extension.test.ts asserts. Opt in with ULTRA_COMPACT_DEBUG=1.
+	if (process.env.ULTRA_COMPACT_DEBUG) {
+		console.log(
+			"[ultra-compact] effective config:",
+			JSON.stringify({
+				autoCompact: mergedConfig.autoCompact,
+				preemptiveWatermark: mergedConfig.preemptiveWatermark,
+				hardWatermark: mergedConfig.hardWatermark,
+				keepPercentage: mergedConfig.keepPercentage,
+				maxKeepTokens: mergedConfig.maxKeepTokens,
+				cacheAware: mergedConfig.cacheAware,
+				maxEvictionLevel: mergedConfig.maxEvictionLevel,
+			}),
+		);
+	}
 
 	const engine = new UltraCompactEngine({
 		...mergedConfig,
