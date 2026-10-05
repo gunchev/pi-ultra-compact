@@ -9,6 +9,7 @@
  */
 
 import { UltraCompactEngine } from "./engine";
+import { messageContent } from "./utils";
 import type { UltraCompactConfig } from "./types";
 
 /** Track current model at runtime (updated by session_start and model_select events) */
@@ -193,10 +194,7 @@ function handleBeforeCompact(
 				// Micro-compaction: no LLM, just strip tool outputs
 				const micro = engine.microCompact(messagesToCompact);
 				const conversationText = micro.messages
-					.map(
-						(m: any) =>
-							`[${m.role}]: ${typeof m.content === "string" ? m.content.substring(0, 200) : ""}`,
-					)
+					.map((m: any) => `[${m.role}]: ${messageContent(m).substring(0, 200)}`)
 					.join("\n");
 				result = {
 					summary: isCacheAware
@@ -267,16 +265,12 @@ function handleBeforeCompact(
 				const tail = nonSystem.slice(-tailKeep);
 
 				const lossySummary = [
-					...system.map(
-						(m: any) =>
-							`[System]: ${typeof m.content === "string" ? m.content : ""}`,
-					),
+					...system.map((m: any) => `[System]: ${messageContent(m)}`),
 					"",
 					"[earlier history truncated — circuit breaker engaged]",
 					"",
 					...tail.map(
-						(m: any) =>
-							`${typeof m.content === "string" ? `[${m.role}]: ${m.content.substring(0, 500)}` : ""}`,
+						(m: any) => `[${m.role}]: ${messageContent(m).substring(0, 500)}`,
 					),
 				]
 					.filter(Boolean)
