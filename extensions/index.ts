@@ -183,8 +183,17 @@ function handleUltracompactCommand(
  * ctx.compact() when the projected usage crosses the configured watermarks.
  * Fire-and-forget on purpose: awaiting ctx.compact() inside the agent_end
  * emit chain would deadlock the extension runner.
+ *
+ * `ctx.compact()` aborts the running agent and, per Pi's own contract, never
+ * resumes the interrupted turn — threshold compaction is `willRetry: false`
+ * too. Without a follow-up the session just goes idle mid-task after every
+ * auto-compaction, so `onComplete` sends one. The `setImmediate` defers past
+ * Pi's `compaction_end` flush of user-typed messages; checking `isIdle()`
+ * after that avoids racing that flush and throwing "Agent is already
+ * processing".
  */
 function handleAgentEnd(
+	pi: any,
 	engine: UltraCompactEngine,
 ): (event: any, ctx: any) => void {
 	return (event: any, ctx: any) => {
@@ -253,6 +262,15 @@ function handleAgentEnd(
 			onComplete: () => {
 				autoCompactionInFlight = false;
 				notify(ctx, "Ultra-compact auto-compaction complete!", "info");
+				// Pi will not continue the turn it aborted. Nudge it, but only if
+				// nothing else is already driving one (the user may have typed).
+				setImmediate(() => {
+					if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) return;
+					if (typeof pi?.sendUserMessage !== "function") return;
+					pi.sendUserMessage(
+						"Ultra-compact ran. Continue with the current task.",
+					);
+				});
 			},
 			onError: (error: Error) => {
 				autoCompactionInFlight = false;
@@ -534,7 +552,7 @@ export default function piUltraCompact(
 	// Register automatic compaction hooks (single handler + proactive trigger)
 	if (mergedConfig.autoCompact) {
 		pi.on("session_before_compact", handleBeforeCompact(engine));
-		pi.on("agent_end", handleAgentEnd(engine));
+		pi.on("agent_end", handleAgentEnd(pi, engine));
 	}
 }
 
