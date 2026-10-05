@@ -347,7 +347,10 @@ describe("generational compaction: MICRO vs FULL selection", () => {
 		const result = await engine.compact(msgs, undefined, CompactionTier.FULL);
 		expect(result.summary.length).toBeGreaterThan(0);
 		// Should contain structured sections from generateSummary
-		expect(result.summary).toContain("## ");
+		// (v1.3.0 token-compressed markers, not the old verbose "## " headers)
+		expect(result.summary).toMatch(/^#G:/m);
+		expect(result.summary).toMatch(/^#D:/m);
+		expect(result.summary).toMatch(/^#E:/m);
 	});
 
 	// ─── Multiple messages accumulation ─────────────────────────
@@ -1000,9 +1003,10 @@ describe("generateSummary all-protected path", () => {
 			makeMsg("3", "user", "DECISION: Use microservices architecture"),
 		];
 		const result = await engine.generateSummary(msgs);
-		expect(result.summary).toContain("## Goals");
-		expect(result.summary).toContain("## Errors");
-		expect(result.summary).toContain("## Decisions");
+		// v1.3.0 token-compressed section markers (were ## Goals/Errors/Decisions)
+		expect(result.summary).toMatch(/^#G:/m);
+		expect(result.summary).toMatch(/^#E:/m);
+		expect(result.summary).toMatch(/^#D:/m);
 	});
 });
 
