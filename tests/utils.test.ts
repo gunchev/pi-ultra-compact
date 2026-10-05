@@ -43,7 +43,8 @@ describe("messageContent", () => {
     expect(result).not.toContain("Let me think");
   });
 
-  it("filters out non-text blocks from structured content", () => {
+  it("tags non-text blocks by type without leaking their payload", () => {
+    // The block survives as "[image]"/"[tool_use]"; its url and name do not.
     const msg: Message = {
       id: "1",
       role: "tool",
@@ -58,6 +59,43 @@ describe("messageContent", () => {
     expect(result).toContain("result data");
     expect(result).not.toContain("img.png");
     expect(result).not.toContain("search");
+  });
+
+  it("describes non-text blocks instead of dropping them", () => {
+    // A message whose blocks are all images or tool calls still has to register as
+    // present. Dropping them makes the message read as empty, which is how content
+    // got erased downstream.
+    const msg: Message = {
+      id: "1",
+      role: "tool",
+      content: [
+        { type: "image", url: "img.png" },
+        { type: "text", text: "result data" },
+        { type: "tool_use", name: "search" },
+      ] as any,
+      timestamp: 1,
+    };
+    expect(messageContent(msg)).toBe("result data [image] [tool_use]");
+  });
+
+  it("keeps an image-only message visible", () => {
+    const msg: Message = {
+      id: "1",
+      role: "user",
+      content: [{ type: "image" }, { type: "image" }] as any,
+      timestamp: 1,
+    };
+    expect(messageContent(msg)).toBe("[image] [image]");
+  });
+
+  it("labels a block with no type as unknown", () => {
+    const msg: Message = {
+      id: "1",
+      role: "tool",
+      content: [{} as any],
+      timestamp: 1,
+    };
+    expect(messageContent(msg)).toBe("[unknown]");
   });
 
   it("handles empty structured content array", () => {

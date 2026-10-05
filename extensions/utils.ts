@@ -10,14 +10,26 @@ import type { CompactionResult, Message, TextContent } from "./types";
 /**
  * Normalize message content to string, handling both plain text and structured arrays.
  */
+/**
+ * Normalize message content to string, handling both plain text and structured arrays.
+ *
+ * Non-text blocks are described with a `[type]` tag rather than dropped, so a
+ * message made entirely of images or tool calls stays visible to token counting
+ * and extraction instead of reading as empty.
+ */
 export function messageContent(msg: Message): string {
 	const c = msg.content;
 	if (typeof c === "string") return c;
 	if (Array.isArray(c)) {
-		return c
+		const text = c
 			.filter((block): block is TextContent => block?.type === "text")
 			.map((block) => block.text ?? "")
 			.join(" ");
+		const other = c
+			.filter((block: any): boolean => block?.type !== "text")
+			.map((block: any): string => `[${block?.type ?? "unknown"}]`)
+			.join(" ");
+		return (text + " " + other).trim();
 	}
 	return String(c ?? "");
 }
