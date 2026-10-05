@@ -181,6 +181,22 @@ describe("summaryHasContent — content-level guard", () => {
 		expect(summaryHasContent(buggy)).toBe(false);
 	});
 
+	it("rejects bare v1.3.0 compressed markers — same bug shape, new format", () => {
+		// v1.3.0 swapped "## Chat" for "#C" and "## Previous Context" for "#Prev".
+		// MARKDOWN_HEADER requires whitespace after the hashes, so these markers read
+		// as content and a summary of nothing but markers passed the guard.
+		expect(summaryHasContent("#C")).toBe(false);
+		expect(summaryHasContent("#Prev")).toBe(false);
+		expect(summaryHasContent("#G:")).toBe(false);
+		expect(summaryHasContent("#Prev\n#C\n[user]: \n[assistant]: ")).toBe(false);
+	});
+
+	it("accepts a compressed marker that carries extracted text", () => {
+		// Only the bare marker is scaffolding; "#G: <goal>" is the extracted goal.
+		expect(summaryHasContent("#G: Build the payment gateway")).toBe(true);
+		expect(summaryHasContent("#C\n- shipped stage 3 with 42 tests")).toBe(true);
+	});
+
 	it("accepts a summary with real content", () => {
 		expect(summaryHasContent("The user asked for X and we did Y.")).toBe(true);
 		expect(

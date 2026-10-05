@@ -125,10 +125,21 @@ const EMPTY_ROLE_STUB = /^\[[^\]]*\]:\s*$/;
 const MARKDOWN_HEADER = /^#{1,6}\s+\S.*$/;
 
 /**
+ * A bare v1.3.0 compressed section marker, e.g. "#C", "#Prev", "#G:".
+ *
+ * Scaffolding in the same sense as MARKDOWN_HEADER, but written without the space
+ * after the hashes, so MARKDOWN_HEADER does not catch it. Only the *bare* form
+ * counts: a marker with text after it ("#G: Build the gateway") carries the
+ * extracted value and must still read as content.
+ */
+const BARE_COMPRESSED_MARKER = /^#[A-Za-z]{1,6}:?\s*$/;
+
+/**
  * Whether a summary carries actual content rather than only structure.
  *
  * A summary can be non-empty in characters yet say nothing: bare role labels
- * ("[user]: ") plus section headers ("## Chat") are scaffolding. The old
+ * ("[user]: ") plus section headers ("## Chat", or the v1.3.0 compressed
+ * markers "#C" / "#Prev") are scaffolding. The old
  * `summary.trim().length === 0` check passed a 480-character string of
  * nothing but role labels, so a contentless summary was committed in place of
  * a real one. This treats a summary with no non-scaffolding line as empty, so
@@ -140,5 +151,10 @@ export function summaryHasContent(summary: string | undefined | null): boolean {
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0)
-		.some((line) => !EMPTY_ROLE_STUB.test(line) && !MARKDOWN_HEADER.test(line));
+		.some(
+			(line) =>
+				!EMPTY_ROLE_STUB.test(line) &&
+				!MARKDOWN_HEADER.test(line) &&
+				!BARE_COMPRESSED_MARKER.test(line),
+		);
 }
