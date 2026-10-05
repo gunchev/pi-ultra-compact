@@ -9,7 +9,7 @@
  */
 
 import { UltraCompactEngine } from "./engine";
-import { messageContent } from "./utils";
+import { messageContent, summaryHasContent } from "./utils";
 import type { UltraCompactConfig } from "./types";
 
 /** Track current model at runtime (updated by session_start and model_select events) */
@@ -219,7 +219,7 @@ function handleBeforeCompact(
 			}
 
 			// ── Validate output ─────────────────────────────────────────
-			if (!result.summary || result.summary.trim().length === 0) {
+			if (!summaryHasContent(result.summary)) {
 				throw new Error("Empty summary returned from compaction");
 			}
 

@@ -56,8 +56,7 @@ export const KEYWORD_PATTERNS = {
 		weight: 0.7,
 	},
 	change: {
-		pattern:
-			/\b(?:ADDED|REMOVED|MODIFIED|CHANGED|UPDATED|CREATED|DELETED)\b:?\s*(.+)/i,
+		pattern: /\b(?:ADDED|REMOVED|MODIFIED|CHANGED|UPDATED|CREATED|DELETED)\b:?\s*(.+)/i,
 		weight: 0.65,
 	},
 	next: {
@@ -72,10 +71,7 @@ export type KeywordCategory = keyof typeof KEYWORD_PATTERNS;
  * Extract matching text from messages for a given keyword category.
  * Returns deduplicated results.
  */
-export function extractByPattern(
-	messages: Message[],
-	category: KeywordCategory,
-): string[] {
+export function extractByPattern(messages: Message[], category: KeywordCategory): string[] {
 	const { pattern } = KEYWORD_PATTERNS[category];
 	const results: string[] = [];
 
@@ -110,9 +106,7 @@ export function containsErrorIndicators(content: string): boolean {
 /**
  * Create an empty CompactionResult with default values.
  */
-export function emptyCompactionResult(
-	previousSummary?: string,
-): CompactionResult {
+export function emptyCompactionResult(previousSummary?: string): CompactionResult {
 	return {
 		summary: previousSummary || "",
 		tokensBefore: 0,
@@ -122,4 +116,29 @@ export function emptyCompactionResult(
 		modifiedFiles: [],
 		timestamp: Date.now(),
 	};
+}
+
+/** A line that is only a role label with nothing after it, e.g. "[user]: ". */
+const EMPTY_ROLE_STUB = /^\[[^\]]*\]:\s*$/;
+
+/** A markdown header line, e.g. "## Chat". Scaffolding, not content. */
+const MARKDOWN_HEADER = /^#{1,6}\s+\S.*$/;
+
+/**
+ * Whether a summary carries actual content rather than only structure.
+ *
+ * A summary can be non-empty in characters yet say nothing: bare role labels
+ * ("[user]: ") plus section headers ("## Chat") are scaffolding. The old
+ * `summary.trim().length === 0` check passed a 480-character string of
+ * nothing but role labels, so a contentless summary was committed in place of
+ * a real one. This treats a summary with no non-scaffolding line as empty, so
+ * it trips the circuit breaker instead.
+ */
+export function summaryHasContent(summary: string | undefined | null): boolean {
+	if (!summary || summary.trim().length === 0) return false;
+	return summary
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0)
+		.some((line) => !EMPTY_ROLE_STUB.test(line) && !MARKDOWN_HEADER.test(line));
 }

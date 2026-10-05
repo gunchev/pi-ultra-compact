@@ -23,6 +23,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import piUltraCompact, { __resetModuleState } from "../extensions/index";
 import { UltraCompactEngine } from "../extensions/engine";
+import { summaryHasContent } from "../extensions/utils";
 
 /** Small window so a compact fixture still lands in a predictable tier band. */
 const WIN = 1000;
@@ -155,6 +156,44 @@ describe("MICRO summary preserves array-content messages", () => {
 		for (let i = 0; i < 4; i++) {
 			expect(summary).toContain(`PLAIN_${i}_`);
 		}
+	});
+});
+
+describe("summaryHasContent — content-level guard", () => {
+	it("rejects an empty or missing summary", () => {
+		expect(summaryHasContent("")).toBe(false);
+		expect(summaryHasContent("   \n  ")).toBe(false);
+		expect(summaryHasContent(undefined)).toBe(false);
+		expect(summaryHasContent(null)).toBe(false);
+	});
+
+	it("rejects bare role labels — the shape the old guard let through", () => {
+		// 480 characters, non-empty by trim(), and says nothing.
+		const stubs = ["[user]: ", "[assistant]: ", "[toolResult]: ", "[user]: "]
+			.join("\n")
+			.padEnd(480, " ");
+		expect(stubs.trim().length).toBeGreaterThan(0);
+		expect(summaryHasContent(stubs)).toBe(false);
+	});
+
+	it("rejects headers plus bare role labels (the exact MICRO bug shape)", () => {
+		const buggy = ["## Chat", "[user]: ", "[assistant]: ", "[toolResult]: "].join("\n");
+		expect(summaryHasContent(buggy)).toBe(false);
+	});
+
+	it("accepts a summary with real content", () => {
+		expect(summaryHasContent("The user asked for X and we did Y.")).toBe(true);
+		expect(
+			summaryHasContent(
+				"## Chat\n[user]: implement the parser\n[assistant]: done, tests green",
+			),
+		).toBe(true);
+	});
+
+	it("accepts a single meaningful line among scaffolding", () => {
+		expect(
+			summaryHasContent("## Goals\n[user]: \n[assistant]: \n- shipped stage 3 with 42 tests"),
+		).toBe(true);
 	});
 });
 
