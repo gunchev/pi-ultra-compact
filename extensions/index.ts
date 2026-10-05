@@ -173,6 +173,55 @@ function handleUltracompactCommand(
 }
 
 /**
+ * Was the agent cut off with work still queued when `agent_end` fired?
+ *
+ * Pi's loop emits `agent_end` from three places, and only two of them can
+ * leave unfinished work behind:
+ *
+ *   1. the stream ended `error` or `aborted` — nothing to resume, and in the
+ *      `aborted` case the operator pressed Esc, so nudging fights them;
+ *   2. `shouldStopAfterTurn` stopped the loop while the last assistant
+ *      message still held tool calls — real work, genuinely interrupted;
+ *   3. normal completion — the loop drained every tool call and found no
+ *      steering or follow-up message, so the agent said its piece and is
+ *      waiting for the operator.
+ *
+ * Case 3 is the overwhelmingly common one, and it is the reason a nudge
+ * cannot be unconditional. "Continue with the current task" after a turn
+ * that finished invents a task that does not exist: the agent wakes with no
+ * pending work, re-reads the transcript to find one, and reports on work it
+ * already reported. Compaction itself is still worth running in case 3 —
+ * reclaiming context while the session is idle is the whole point of the
+ * proactive trigger — but it must stay silent.
+ *
+ * The signal is the last assistant message. A `toolUse` stop, or a message
+ * still holding a tool-call block, means work was outstanding; `stop`,
+ * `error` and `aborted` mean it was not. An empty list, or one with no
+ * assistant message, is no evidence of unfinished work, so it does not
+ * nudge either.
+ */
+export function hadPendingWork(messages: unknown): boolean {
+	if (!Array.isArray(messages)) return false;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as
+			| { role?: string; stopReason?: string; content?: unknown }
+			| undefined;
+		if (message?.role !== "assistant") continue;
+		const stop = message.stopReason;
+		// An abort is the operator pressing Esc, and an error is not ours to
+		// retry. Neither wants a nudge, whatever the message body holds — so
+		// these are settled before the content is consulted.
+		if (stop === "aborted" || stop === "error") return false;
+		if (stop === "toolUse" || stop === "length") return true;
+		// No recognised stop reason: fall back to whether a tool call is still
+		// sitting in the message.
+		if (!Array.isArray(message.content)) return false;
+		return message.content.some((block) => (block as { type?: string })?.type === "toolCall");
+	}
+	return false;
+}
+
+/**
  * Proactive auto-compaction trigger.
  *
  * Pi's NATIVE compaction only fires at `contextWindow - reserveTokens`
@@ -186,11 +235,16 @@ function handleUltracompactCommand(
  *
  * `ctx.compact()` aborts the running agent and, per Pi's own contract, never
  * resumes the interrupted turn — threshold compaction is `willRetry: false`
- * too. Without a follow-up the session just goes idle mid-task after every
- * auto-compaction, so `onComplete` sends one. The `setImmediate` defers past
- * Pi's `compaction_end` flush of user-typed messages; checking `isIdle()`
- * after that avoids racing that flush and throwing "Agent is already
- * processing".
+ * too. So when the agent *was* interrupted, `onComplete` sends a follow-up
+ * to restart it. When it was not — the normal case, per `hadPendingWork` —
+ * no follow-up is sent, because there is nothing to resume. The decision is
+ * taken from the `agent_end` payload at trigger time and carried into the
+ * closure; by the time `onComplete` runs the transcript has been compacted
+ * and can no longer answer the question.
+ *
+ * The `setImmediate` defers past Pi's `compaction_end` flush of user-typed
+ * messages; checking `isIdle()` after that avoids racing that flush and
+ * throwing "Agent is already processing".
  */
 function handleAgentEnd(
 	pi: any,
@@ -252,6 +306,9 @@ function handleAgentEnd(
 
 		autoCompactionInFlight = true;
 		lastAutoTriggerRound = agentRounds;
+		// Taken now, not in onComplete: this is the last moment the pre-compaction
+		// transcript still exists to answer it.
+		const resumeNeeded = hadPendingWork(event?.messages);
 		notify(
 			ctx,
 			`Context at ${Math.round(contextTokens / 1000)}k tokens — starting Ultra-compact…`,
@@ -262,8 +319,11 @@ function handleAgentEnd(
 			onComplete: () => {
 				autoCompactionInFlight = false;
 				notify(ctx, "Ultra-compact auto-compaction complete!", "info");
-				// Pi will not continue the turn it aborted. Nudge it, but only if
-				// nothing else is already driving one (the user may have typed).
+				// Only a turn that was cut short needs restarting. A turn that
+				// finished on its own has nothing to continue, and nudging it
+				// manufactures work. Stay quiet when nothing else is driving a
+				// turn and there is nothing queued to drive one with.
+				if (!resumeNeeded) return;
 				setImmediate(() => {
 					if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) return;
 					if (typeof pi?.sendUserMessage !== "function") return;
