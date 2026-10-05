@@ -145,11 +145,12 @@ describe("UltraCompactEngine Effectiveness", () => {
 	test("preserves all critical info sections", async () => {
 		const conv = generateConversation(100);
 		const result = await engine.generateSummary(conv);
-		expect(result.summary).toContain("## Goals");
-		expect(result.summary).toContain("## Decisions");
-		expect(result.summary).toContain("## Errors");
-		expect(result.summary).toContain("## Files");
-		expect(result.summary).toContain("## Next");
+		// v1.3.0 token-compressed section markers (were ## Goals/Decisions/...)
+		expect(result.summary).toMatch(/^#G:/m);
+		expect(result.summary).toMatch(/^#D:/m);
+		expect(result.summary).toMatch(/^#E:/m);
+		expect(result.summary).toMatch(/^#F:/m);
+		expect(result.summary).toMatch(/^#N:/m);
 	});
 
 	test("preserves goals in summary", async () => {
@@ -189,7 +190,7 @@ describe("UltraCompactEngine Effectiveness", () => {
 			secondBatch,
 			firstResult.summary,
 		);
-		expect(secondResult.summary).toContain("## Previous Context");
+		expect(secondResult.summary).toContain("#Prev");
 	});
 
 	test("handles empty conversation gracefully", async () => {
