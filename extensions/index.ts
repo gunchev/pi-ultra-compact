@@ -175,13 +175,11 @@ function handleUltracompactCommand(
 /**
  * Was the agent cut off with work still queued when `agent_end` fired?
  *
- * Pi's loop emits `agent_end` from three places, and only two of them can
- * leave unfinished work behind:
+ * Pi's loop emits `agent_end` from three places:
  *
- *   1. the stream ended `error` or `aborted` — nothing to resume, and in the
- *      `aborted` case the operator pressed Esc, so nudging fights them;
+ *   1. the stream ended `aborted` or `error`;
  *   2. `shouldStopAfterTurn` stopped the loop while the last assistant
- *      message still held tool calls — real work, genuinely interrupted;
+ *      message still held tool calls;
  *   3. normal completion — the loop drained every tool call and found no
  *      steering or follow-up message, so the agent said its piece and is
  *      waiting for the operator.
@@ -192,13 +190,24 @@ function handleUltracompactCommand(
  * pending work, re-reads the transcript to find one, and reports on work it
  * already reported. Compaction itself is still worth running in case 3 —
  * reclaiming context while the session is idle is the whole point of the
- * proactive trigger — but it must stay silent.
+ * proactive trigger — but the follow-up must stay silent.
  *
- * The signal is the last assistant message. A `toolUse` stop, or a message
- * still holding a tool-call block, means work was outstanding; `stop`,
- * `error` and `aborted` mean it was not. An empty list, or one with no
- * assistant message, is no evidence of unfinished work, so it does not
- * nudge either.
+ * Of the other two, only the operator's Esc means "do not resume". An
+ * aborted turn was stopped by a human who is about to type something else,
+ * so nudging fights them. An errored turn was stopped by a dead provider
+ * stream and the work is still sitting there: on a real 154k-token run the
+ * message that ended it carried `stopReason: "error"`, `errorMessage:
+ * "terminated"` and a `write` tool call that never ran, and the session
+ * stayed idle mid-task at 84% context. Pi has already spent its own
+ * transient retries by the time `stopReason` reads `error` — and where it
+ * has not, the `isIdle()` check in `onComplete` keeps us from doubling up on
+ * a retry already in flight.
+ *
+ * So `aborted` is the only stop reason that suppresses the nudge; `toolUse`,
+ * `length` and `error` all mean the turn did not finish. With no recognised
+ * stop reason, fall back to whether a tool call is still in the message. An
+ * empty list, or one with no assistant message, is no evidence of unfinished
+ * work, so it does not nudge either.
  */
 export function hadPendingWork(messages: unknown): boolean {
 	if (!Array.isArray(messages)) return false;
@@ -208,11 +217,10 @@ export function hadPendingWork(messages: unknown): boolean {
 			| undefined;
 		if (message?.role !== "assistant") continue;
 		const stop = message.stopReason;
-		// An abort is the operator pressing Esc, and an error is not ours to
-		// retry. Neither wants a nudge, whatever the message body holds — so
-		// these are settled before the content is consulted.
-		if (stop === "aborted" || stop === "error") return false;
-		if (stop === "toolUse" || stop === "length") return true;
+		// An abort is the operator pressing Esc, so it is settled before the
+		// content is consulted — a dangling tool call does not outvote a human.
+		if (stop === "aborted") return false;
+		if (stop === "toolUse" || stop === "length" || stop === "error") return true;
 		// No recognised stop reason: fall back to whether a tool call is still
 		// sitting in the message.
 		if (!Array.isArray(message.content)) return false;

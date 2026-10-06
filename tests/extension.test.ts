@@ -91,13 +91,43 @@ describe("auto-compaction follow-up", () => {
 	});
 
 	it("stays quiet when the operator aborted the turn", async () => {
-		const sendUserMessage = await run([assistant("aborted")]);
+		// Esc wins even with a tool call dangling — a human stopped this on
+		// purpose and is about to type something else.
+		const sendUserMessage = await run([assistant("aborted", [TOOL_CALL])]);
 
 		expect(sendUserMessage).not.toHaveBeenCalled();
 	});
 
-	it("stays quiet after an errored response", async () => {
-		const sendUserMessage = await run([assistant("error")]);
+	it("nudges after a provider error cut the turn short", async () => {
+		// The real case: the llama.cpp stream died with "terminated" while a
+		// write tool call sat unexecuted behind it. Pi had already spent its
+		// own transient retries, so without a nudge the session just sat
+		// idle mid-task at 84% context.
+		const sendUserMessage = await run([assistant("error", [{ type: "thinking" }, TOOL_CALL])]);
+
+		expect(sendUserMessage).toHaveBeenCalledTimes(1);
+		expect(sendUserMessage).toHaveBeenCalledWith(
+			expect.stringContaining("Continue with the current task"),
+		);
+	});
+
+	it("nudges when the errored stream left no tool call behind", async () => {
+		// A stream that dies mid-sentence is unfinished work just as much as
+		// one that dies with a call queued: the turn never completed, so the
+		// session must not be left idle on it. Pinned separately because the
+		// tool-call case above also satisfies the content fallback, and so
+		// would pass with the error branch gone.
+		const sendUserMessage = await run([
+			assistant("error", [{ type: "text", text: "Let me update the test to" }]),
+		]);
+
+		expect(sendUserMessage).toHaveBeenCalledTimes(1);
+	});
+
+	it("stays quiet when Pi is already retrying the errored turn", async () => {
+		// Same errored message, but a retry is in flight: isIdle() is false,
+		// so we must not stack a second driver on top of Pi's.
+		const sendUserMessage = await run([assistant("error", [TOOL_CALL])], false);
 
 		expect(sendUserMessage).not.toHaveBeenCalled();
 	});
@@ -158,8 +188,10 @@ describe("hadPendingWork", () => {
 		["length", [a("length")], true],
 		["stop with text", [a("stop", [{ type: "text", text: "done" }])], false],
 		["stop with no content", [a("stop")], false],
-		["aborted", [a("aborted", [tool])], false],
-		["error", [a("error", [tool])], false],
+		["aborted with a tool call", [a("aborted", [tool])], false],
+		["aborted with no tool call", [a("aborted")], false],
+		["error with a tool call", [a("error", [tool])], true],
+		["error with no tool call", [a("error", [{ type: "text", text: "cut off" }])], true],
 		["no assistant message", [{ role: "user", content: "hi" }], false],
 		["empty", [], false],
 		["not an array", "nope", false],
