@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Stale-ctx crash loop after a failed compaction** — `notify()` no longer throws when the captured `ctx` has been invalidated by a session replacement/reload, or when `ctx.ui.notify` is missing. "error" messages fall back to `console.error`; other levels are dropped. Previously a compaction that timed out called `notify()` from its `onError`, touching `ctx.ui` after the session had moved on: Pi's "This extension ctx is stale…" error escaped with nothing above it to catch it, `pi -p` exited 1, and every resume re-compacted and crashed again.
+- **Deferred callbacks are total** — compact's `onComplete`/`onError` and the `setImmediate` resume now run through a guard that swallows exceptions from the captured `ctx`/`pi`, including the `ctx.isIdle()` read and `pi.sendUserMessage()`. A fresh ctx behaves exactly as before: the notification lands in the UI and an interrupted turn is still resumed.
+- **Auto-compaction no longer sticks disabled** — `autoCompactionInFlight` is cleared before the completion notification, so a notification that cannot land cannot leave the proactive trigger off for the rest of the session.
+- **Non-`Error` failure payloads** — an `onError` value that is not an `Error` is rendered as text instead of throwing on `.message`.
+
+### Tests
+
+- `tests/stale-ctx.test.ts` — 14 new tests using a fake ctx whose `ui`/`isIdle` getters throw Pi's stale-ctx error, covering the command callbacks, the auto-compaction trigger, the deferred resume, the in-flight flag, and the fresh-ctx paths.
+
 ## [1.3.0] - 2026-07-12
 
 ### Added

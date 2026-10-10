@@ -115,13 +115,57 @@ function captureModel(model: any): void {
 	}
 }
 
+/** Readable text for any thrown value, Error or not. */
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Tell the operator something, never throwing.
+ *
+ * `ctx.ui` is not a plain field: once the session the ctx was bound to has
+ * been replaced or reloaded, Pi's extension runner invalidates the ctx and
+ * merely *reading* `ctx.ui` throws. Callers include deferred callbacks,
+ * where an escaping exception has nobody above it to catch it, so this
+ * function is total. With no usable UI, an "error" falls back to
+ * console.error — stderr is safe in headless `pi -p` runs, where stdout
+ * belongs to Pi — and every other level is dropped rather than escalated.
+ */
 function notify(
 	ctx: any,
 	message: string,
 	type: "info" | "warning" | "error" = "info",
 ): void {
-	if (typeof ctx?.ui?.notify === "function") {
-		ctx.ui.notify(message, type);
+	try {
+		if (typeof ctx?.ui?.notify === "function") {
+			ctx.ui.notify(message, type);
+			return;
+		}
+	} catch {
+		// Stale ctx (or a UI that failed on us); fall through to the console.
+	}
+	if (type === "error") {
+		console.error(message);
+	}
+}
+
+/**
+ * Run a callback that fires after the event handler which registered it has
+ * already returned — compact's onComplete/onError, a setImmediate resume, a
+ * timer. Such a callback outlives the ctx it closed over: the session can be
+ * replaced or reloaded in the gap, and then every touch of that ctx throws.
+ *
+ * Nothing here is worth an uncaught exception. In a headless `pi -p` run one
+ * escaping exception ends the process with status 1, and because the
+ * compaction that triggered it is re-attempted on every resume, a single
+ * stale ctx turns into a crash loop. So the failure is reported out-of-band
+ * through `notify` (which is itself total) and dropped.
+ */
+function deferred(label: string, ctx: any, body: () => void): void {
+	try {
+		body();
+	} catch (error) {
+		notify(ctx, `Ultra-compact ${label} failed: ${errorText(error)}`, "error");
 	}
 }
 
@@ -158,16 +202,14 @@ function handleUltracompactCommand(
 		// session_before_compact hook applies ultra-compact logic
 		ctx.compact({
 			customInstructions: "ultracompact",
-			onComplete: () => {
-				notify(ctx, "Ultra-compact compaction complete!", "info");
-			},
-			onError: (error: Error) => {
-				if (typeof ctx?.ui?.notify === "function") {
-					notify(ctx, `Ultra-compact failed: ${error.message}`, "error");
-				} else {
-					console.error("Ultra-compact failed:", error.message);
-				}
-			},
+			onComplete: () =>
+				deferred("compaction callback", ctx, () => {
+					notify(ctx, "Ultra-compact compaction complete!", "info");
+				}),
+			onError: (error: Error) =>
+				deferred("compaction callback", ctx, () => {
+					notify(ctx, `Ultra-compact failed: ${errorText(error)}`, "error");
+				}),
 		});
 	};
 }
@@ -324,30 +366,38 @@ function handleAgentEnd(
 		);
 		void ctx.compact({
 			customInstructions: "ultracompact",
-			onComplete: () => {
-				autoCompactionInFlight = false;
-				notify(ctx, "Ultra-compact auto-compaction complete!", "info");
-				// Only a turn that was cut short needs restarting. A turn that
-				// finished on its own has nothing to continue, and nudging it
-				// manufactures work. Stay quiet when nothing else is driving a
-				// turn and there is nothing queued to drive one with.
-				if (!resumeNeeded) return;
-				setImmediate(() => {
-					if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) return;
-					if (typeof pi?.sendUserMessage !== "function") return;
-					pi.sendUserMessage(
-						"Ultra-compact ran. Continue with the current task.",
+			onComplete: () =>
+				deferred("auto-compaction callback", ctx, () => {
+					// Cleared first: a notification that cannot land must not
+					// leave auto-compaction disabled for the whole session.
+					autoCompactionInFlight = false;
+					notify(ctx, "Ultra-compact auto-compaction complete!", "info");
+					// Only a turn that was cut short needs restarting. A turn that
+					// finished on its own has nothing to continue, and nudging it
+					// manufactures work. Stay quiet when nothing else is driving a
+					// turn and there is nothing queued to drive one with.
+					if (!resumeNeeded) return;
+					// Both the isIdle() read and the send can hit a stale ctx, so
+					// the whole deferred body goes through the guard.
+					setImmediate(() =>
+						deferred("auto-compaction resume", ctx, () => {
+							if (typeof ctx?.isIdle === "function" && !ctx.isIdle()) return;
+							if (typeof pi?.sendUserMessage !== "function") return;
+							pi.sendUserMessage(
+								"Ultra-compact ran. Continue with the current task.",
+							);
+						}),
 					);
-				});
-			},
-			onError: (error: Error) => {
-				autoCompactionInFlight = false;
-				notify(
-					ctx,
-					`Ultra-compact auto-compaction failed: ${error.message}`,
-					"error",
-				);
-			},
+				}),
+			onError: (error: Error) =>
+				deferred("auto-compaction callback", ctx, () => {
+					autoCompactionInFlight = false;
+					notify(
+						ctx,
+						`Ultra-compact auto-compaction failed: ${errorText(error)}`,
+						"error",
+					);
+				}),
 		});
 	};
 }

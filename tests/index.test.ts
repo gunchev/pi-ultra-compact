@@ -213,8 +213,7 @@ describe("/ultracompact command handler", () => {
 		};
 		handler({}, ctx);
 		expect(consoleError).toHaveBeenCalledWith(
-			expect.stringContaining("Ultra-compact failed:"),
-			"test error",
+			expect.stringContaining("Ultra-compact failed: test error"),
 		);
 		consoleError.mockRestore();
 	});
